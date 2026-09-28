@@ -90,7 +90,12 @@ func start_server(port: int = DEFAULT_PORT, max_clients: int = MAX_CLIENTS) -> E
 
 
 func connect_to_default_server() -> Error:
-	return connect_to_server(DEFAULT_SERVER_ADDRESS)
+	var address := DEFAULT_SERVER_ADDRESS
+	if OS.is_debug_build():
+		for argument: String in OS.get_cmdline_user_args():
+			if argument.begins_with("--server-address="):
+				address = argument.trim_prefix("--server-address=")
+	return connect_to_server(address)
 
 
 func connect_to_server(address: String = DEFAULT_SERVER_ADDRESS, port: int = DEFAULT_PORT) -> Error:

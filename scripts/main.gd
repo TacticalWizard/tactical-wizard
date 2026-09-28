@@ -76,6 +76,8 @@ func _ready() -> void:
 	(pause_menu.get_node("%ResumeButton") as Button).pressed.connect(toggle_pause)
 	pause_menu.get_node("Panel/Layout/ReturnButton").pressed.connect(_abandon_to_base)
 	show_start()
+	if OS.is_debug_build() and "--client" in OS.get_cmdline_user_args():
+		call_deferred("_connect_to_server")
 
 
 func _input(event: InputEvent) -> void:
@@ -106,6 +108,8 @@ func _on_client_connected() -> void:
 	if start_screen != null:
 		start_screen.visible = false
 	show_base()
+	if OS.is_debug_build() and "--auto-match" in OS.get_cmdline_user_args():
+		NetworkManager.request_matchmaking()
 
 
 func _on_client_connection_failed(_message: String) -> void:
@@ -355,10 +359,7 @@ func refresh_local_input_state(source: String = "external") -> void:
 	var raid := active_area as RaidScene if active_area is RaidScene else null
 	var raid_ui_open := raid != null and raid.is_aim_ui_open()
 	var gameplay_blocked := local_menu_open or raid_ui_open
-	# Multiplayer uses the same absolute, visible cursor aiming as main. Gameplay
-	# blocking is controlled independently so opening and closing UI cannot leave
-	# captured-mouse state out of sync with Player input.
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if gameplay_blocked or raid == null else Input.MOUSE_MODE_CAPTURED
 	if raid != null:
 		raid.set_local_gameplay_input_blocked(gameplay_blocked, source)
 	print("[INPUT_STATE] peer=%d source=%s menu_open=%s pause_visible=%s raid_ui_open=%s gameplay_blocked=%s mouse_mode=%d" % [

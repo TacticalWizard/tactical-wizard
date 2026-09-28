@@ -2,10 +2,6 @@ name: Discord Push Notification
 
 on:
   push:
-    branches:
-      - main
-      - multiplayer
-      - multiplayer-test
 
 jobs:
   discord-notification:

@@ -100,7 +100,7 @@ func _physics_process(delta: float) -> void:
 			global_position = _quadratic_bezier(start_position, control, destination, progress)
 		"high_lob":
 			global_position = start_position.lerp(destination, progress)
-			global_position.y = start_y + sin(progress * PI) * high_lob_arc_height
+			global_position.y += sin(progress * PI) * high_lob_arc_height
 		_:
 			global_position = start_position.lerp(destination, progress)
 	_animate_visual(delta, progress)

@@ -185,6 +185,8 @@ func _process_network_raid(delta: float) -> void:
 		if player != null:
 			_update_visibility()
 		return
+	if not network_raid_active:
+		return
 	_update_grass_wall_cycle(delta)
 	network_snapshot_elapsed += delta
 	if network_snapshot_elapsed < 1.0 / 20.0:
@@ -209,7 +211,9 @@ func _process_network_raid(delta: float) -> void:
 				"cooldowns": network_player.page_cooldowns.duplicate(), "dead": network_player.dead
 			})
 	for target_peer: int in NetworkManager.get_session_members(raid_session_id):
-		receive_network_raid_snapshots.rpc_id(target_peer, states)
+		for state: Dictionary in states:
+			var single_state: Array[Dictionary] = [state]
+			receive_network_raid_snapshots.rpc_id(target_peer, single_state)
 	var enemy_states: Array[Dictionary] = []
 	for enemy_id: String in network_enemies:
 		var enemy := network_enemies[enemy_id] as EnemyController
@@ -426,8 +430,9 @@ func _register_network_loot_container(container: LootContainer) -> void:
 		container.network_loot_id = "loot_%d" % _next_network_loot_id
 		_next_network_loot_id += 1
 	network_loot_containers[container.network_loot_id] = container
-	for peer_id: int in NetworkManager.get_session_members(raid_session_id):
-		spawn_network_loot.rpc_id(peer_id, _network_loot_spawn_data(container))
+	if network_raid_active:
+		for peer_id: int in NetworkManager.get_session_members(raid_session_id):
+			spawn_network_loot.rpc_id(peer_id, _network_loot_spawn_data(container))
 
 
 func _network_loot_spawn_data(container: LootContainer) -> Dictionary:
@@ -980,7 +985,7 @@ func _refresh_grass_walls() -> void:
 		wall.global_position = placement.position
 		wall.rotation_degrees.y = float(placement.rotation) + rng.randf_range(-12.0, 12.0)
 	grass_wall_generation += 1
-	if NetworkManager.is_network_game() and multiplayer.is_server() and not raid_session_id.is_empty():
+	if NetworkManager.is_network_game() and multiplayer.is_server() and network_raid_active and not raid_session_id.is_empty():
 		var wall_state := _network_grass_wall_state()
 		for peer_id: int in NetworkManager.get_session_members(raid_session_id):
 			sync_network_grass_walls.rpc_id(peer_id, wall_state)
@@ -1409,7 +1414,7 @@ func spawn_player_spell(caster: PlayerController, config: RuntimeSpellConfig, st
 	var projectile := config.base_spell.projectile_scene.instantiate() as SpellProjectile
 	temporary_effects.add_child(projectile)
 	projectile.global_position = start
-	projectile.configure(caster, config, direction, "player", target)
+	projectile.configure(caster, config, direction, "player", target, not caster.network_enabled)
 	if NetworkManager.is_network_game() and multiplayer.is_server():
 		_register_network_projectile(projectile, config, start, direction, "player", target, "peer:%d" % caster.network_peer_id)
 	return projectile

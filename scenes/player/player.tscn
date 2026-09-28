@@ -53,12 +53,18 @@ transform = Transform3D(1, 0, 0, 0, 0.733, 0.68, 0, -0.68, 0.733, 0, 15, 11)
 current = false
 fov = 49.0
 
+[node name="FirstPersonPitch" type="Node3D" parent="."]
+position = Vector3(0, 1.55, 0)
+[node name="FirstPersonCamera" type="Camera3D" parent="FirstPersonPitch"]
+current = false
+fov = 75.0
+
 [node name="WandSocket" type="Node3D" parent="."]
 unique_name_in_owner = true
-position = Vector3(0.34, 0.98, -0.34)
+position = Vector3(0.24, 1.38, 0)
 [node name="CastOrigin" type="Marker3D" parent="WandSocket"]
 unique_name_in_owner = true
-position = Vector3(0, 0, -0.55)
+position = Vector3(0, 0, -0.35)
 [node name="CastGlow" type="MeshInstance3D" parent="WandSocket"]
 unique_name_in_owner = true
 visible = false

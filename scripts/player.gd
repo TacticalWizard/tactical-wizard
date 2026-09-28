@@ -57,6 +57,11 @@ var _snapshot_buffer: Array[Dictionary] = []
 @export_node_path("MeshInstance3D") var placement_preview_path: NodePath = ^"PlacementPreview"
 @export_node_path("MeshInstance3D") var trajectory_preview_path: NodePath = ^"TrajectoryPreview"
 @export_node_path("Camera3D") var camera_path: NodePath = ^"CameraRig/TopDownCamera"
+@export_node_path("Camera3D") var first_person_camera_path: NodePath = ^"FirstPersonPitch/FirstPersonCamera"
+
+const FPS_MOUSE_SENSITIVITY := 0.0025
+const FPS_PITCH_LIMIT := 1.35
+const FPS_AIM_DISTANCE := 100.0
 
 var max_health: float = 100.0
 var health: float = 100.0
@@ -122,6 +127,8 @@ const NETWORK_RECONCILE_BLEND := 0.12
 @onready var placement_preview: MeshInstance3D = get_node(placement_preview_path) as MeshInstance3D
 @onready var trajectory_preview: MeshInstance3D = get_node(trajectory_preview_path) as MeshInstance3D
 @onready var camera: Camera3D = get_node(camera_path) as Camera3D
+@onready var first_person_camera: Camera3D = get_node(first_person_camera_path) as Camera3D
+@onready var first_person_pitch: Node3D = first_person_camera.get_parent() as Node3D
 var wand_socket_base_position: Vector3
 var cast_vfx_seed: float = 0.0
 
@@ -156,6 +163,7 @@ func _ready() -> void:
 	# local/remote role is being configured. That race left late-joining clients
 	# looking at the fixed spawn camera instead of their own player.
 	camera.current = not network_enabled
+	first_person_camera.current = false
 	if not network_enabled:
 		camera.global_position = global_position + Vector3(0, camera_height, camera_distance)
 		camera.look_at(global_position + Vector3(0, 0.5, 0))
@@ -235,24 +243,30 @@ func _initialize_local_network_player() -> void:
 	set_process_unhandled_input(true)
 	_network_aim_yaw = rotation.y
 	_network_aim_initialized = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	for part_name: String in ["Head", "HatBrim", "CrookedHat"]:
+		var part := visual.get_node_or_null("PlaceholderMageModel/" + part_name) as MeshInstance3D
+		if part != null:
+			part.set_layer_mask_value(2, true)
+			part.set_layer_mask_value(1, false)
+	first_person_camera.cull_mask &= ~2
 
 
 func activate_local_network_camera() -> void:
 	if not is_local_network_player():
 		return
-	camera.global_position = global_position + Vector3(0, camera_height, camera_distance)
-	camera.look_at(global_position + Vector3(0, 0.5, 0))
-	camera.make_current()
+	camera.current = false
+	first_person_pitch.rotation.x = _network_aim_pitch
+	first_person_camera.make_current()
 	var viewport_camera := get_viewport().get_camera_3d()
 	print("[CAMERA] local_peer=%d player_peer=%d camera_current=%s viewport_camera=%s" % [
-		multiplayer.get_unique_id(), network_peer_id, str(camera.current),
+		multiplayer.get_unique_id(), network_peer_id, str(first_person_camera.current),
 		str(viewport_camera.get_path() if viewport_camera != null else NodePath())
 	])
 
 
 func _initialize_remote_network_player() -> void:
 	camera.current = false
+	first_person_camera.current = false
 	placement_preview.visible = false
 	trajectory_preview.visible = false
 	set_process_unhandled_input(false)
@@ -315,6 +329,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		var root: Node = get_tree().current_scene
 		if root.has_method("toggle_pause"):
 			root.toggle_pause()
+
+
+func _input(event: InputEvent) -> void:
+	if not is_local_network_player() or dead or _is_free_aim_ui_blocked():
+		return
+	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		rotation.y -= event.relative.x * FPS_MOUSE_SENSITIVITY
+		_network_aim_yaw = rotation.y
+		_network_aim_pitch = clampf(_network_aim_pitch - event.relative.y * FPS_MOUSE_SENSITIVITY, -FPS_PITCH_LIMIT, FPS_PITCH_LIMIT)
+		first_person_pitch.rotation.x = _network_aim_pitch
+		_update_network_camera_aim_target()
 
 
 func _network_physics_process(delta: float) -> void:
@@ -416,7 +441,7 @@ func submit_movement_input(input: Vector2, rotation_y: float, aim_pitch: float, 
 		return
 	_network_move_input = input.limit_length(1.0)
 	_network_rotation_y = rotation_y
-	_network_aim_pitch = clampf(aim_pitch, -0.65, 0.65)
+	_network_aim_pitch = clampf(aim_pitch, -FPS_PITCH_LIMIT, FPS_PITCH_LIMIT)
 	_network_sprint = sprint_pressed
 	_network_crouch = crouch_pressed
 	_network_focus = focus_pressed
@@ -490,7 +515,7 @@ func request_spell_cast(page_index: int, reported_aim_origin: Vector3, reported_
 	if reported_aim_direction.length_squared() < 0.001:
 		print("[CAST_REJECT] peer=%d spell=%s reason=invalid_aim_direction" % [network_peer_id, config.base_spell.spell_id])
 		return
-	var max_origin_distance := camera_height + camera_distance + 4.0
+	var max_origin_distance := 2.5
 	if reported_aim_origin.distance_to(global_position) > max_origin_distance:
 		print("[CAST_REJECT] peer=%d spell=%s reason=invalid_aim_origin" % [network_peer_id, config.base_spell.spell_id])
 		return
@@ -682,9 +707,8 @@ func _update_movement(delta: float) -> void:
 
 
 func _apply_movement_input(input: Vector2, sprint_pressed: bool, crouch_pressed: bool, focus_pressed: bool, delta: float) -> void:
-	# Duckov-style movement is world-space. Facing is replicated separately and
-	# must never rotate W/A/S/D on either the client or the dedicated server.
-	var direction := Vector3(input.x, 0, input.y)
+	# The server and local prediction use the same replicated body yaw.
+	var direction := (Basis(Vector3.UP, rotation.y) * Vector3(input.x, 0, input.y)).normalized() if input.length_squared() > 1.0 else Basis(Vector3.UP, rotation.y) * Vector3(input.x, 0, input.y)
 	if exhaustion_remaining > 0.0:
 		direction = Vector3.ZERO
 	is_focused = focus_pressed and not casting
@@ -744,12 +768,9 @@ func _update_camera(delta: float) -> void:
 
 
 func _update_network_camera_aim_target() -> void:
-	var viewport := get_viewport()
-	var mouse_position := viewport.get_mouse_position()
-	_network_aim_origin = camera.project_ray_origin(mouse_position)
-	_network_aim_direction = camera.project_ray_normal(mouse_position).normalized()
-	aim_point = _ground_plane_aim_target(_network_aim_origin, _network_aim_direction, aim_point)
-	_apply_network_aim_facing()
+	_network_aim_origin = first_person_camera.global_position
+	_network_aim_direction = -first_person_camera.global_transform.basis.z.normalized()
+	aim_point = _raycast_aim_target(_network_aim_origin, _network_aim_direction, FPS_AIM_DISTANCE)
 	_update_preview()
 
 
@@ -775,9 +796,15 @@ func _ground_plane_aim_target(ray_origin: Vector3, ray_direction: Vector3, fallb
 
 
 func _server_aim_target(ray_origin: Vector3, ray_direction: Vector3, _max_distance: float) -> Vector3:
-	# Validate the client ray separately, then resolve it with the same ground-plane
-	# projection used by main so authority does not change aiming behavior.
-	return _ground_plane_aim_target(ray_origin, ray_direction, aim_point)
+	return _raycast_aim_target(ray_origin, ray_direction, minf(_max_distance, FPS_AIM_DISTANCE))
+
+
+func _raycast_aim_target(ray_origin: Vector3, ray_direction: Vector3, max_distance: float) -> Vector3:
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, ray_origin + ray_direction * max_distance)
+	query.collision_mask = 1 | 2 | 4
+	query.exclude = [get_rid()]
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	return hit.position if not hit.is_empty() else ray_origin + ray_direction * max_distance
 
 
 func _is_free_aim_ui_blocked() -> bool:
@@ -911,8 +938,9 @@ func complete_cast() -> bool:
 	page_cooldowns[selected_page] = config.cooldown
 	mana_changed.emit()
 	var raid: Node = _gameplay_area()
+	var cast_start := _safe_cast_start()
 	if raid.has_method("spawn_cast_release"):
-		raid.spawn_cast_release(cast_origin.global_position, config.base_spell.primary_element, config.base_spell.debug_color, cast_vfx_seed)
+		raid.spawn_cast_release(cast_start, config.base_spell.primary_element, config.base_spell.debug_color, cast_vfx_seed)
 	if is_explosion:
 		if raid.has_method("play_explosion_sequence"):
 			raid.play_explosion_sequence(self)
@@ -922,27 +950,43 @@ func complete_cast() -> bool:
 		if raid.has_method("spawn_healing_circle"):
 			active_healing_circle = raid.spawn_healing_circle(self, config, cast_target)
 	elif config.behavior_type == "projectile":
-		var base_direction: Vector3 = cast_target - cast_origin.global_position
-		base_direction.y = 0.0
+		var base_direction: Vector3 = cast_target - cast_start
+		if not network_enabled:
+			base_direction.y = 0.0
 		base_direction = base_direction.normalized()
 		if "beam" in config.behavior_tags and raid.has_method("cast_special_spell"):
-			raid.cast_special_spell(self, config, cast_origin.global_position, cast_target, base_direction, "beam")
+			raid.cast_special_spell(self, config, cast_start, cast_target, base_direction, "beam")
 		else:
 			for projectile_index: int in range(config.projectile_count):
 				var offset: float = float(projectile_index) - float(config.projectile_count - 1) * 0.5
 				var direction: Vector3 = base_direction.rotated(Vector3.UP, deg_to_rad(offset * 8.0))
 				if raid.has_method("spawn_player_spell"):
-					raid.spawn_player_spell(self, config, cast_origin.global_position, direction, cast_target)
+					raid.spawn_player_spell(self, config, cast_start, direction, cast_target)
 	elif raid.has_method("cast_special_spell"):
-		var base_direction: Vector3 = cast_target - cast_origin.global_position
-		base_direction.y = 0.0
+		var base_direction: Vector3 = cast_target - cast_start
+		if not network_enabled:
+			base_direction.y = 0.0
 		base_direction = base_direction.normalized()
-		raid.cast_special_spell(self, config, cast_origin.global_position, cast_target, base_direction)
+		raid.cast_special_spell(self, config, cast_start, cast_target, base_direction)
 	spell_cast.emit(global_position, 15.0, config.base_spell.spell_id)
 	if raid.has_method("notify_spell_cast"):
 		raid.notify_spell_cast(global_position, 15.0)
 	recoil_amount = 0.22
 	return true
+
+
+func _safe_cast_start() -> Vector3:
+	var muzzle := cast_origin.global_position
+	if not network_enabled:
+		return muzzle
+	var eye := global_position + Vector3(0, 1.55, 0)
+	var query := PhysicsRayQueryParameters3D.create(eye, muzzle)
+	query.collision_mask = 1
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return muzzle
+	var toward_muzzle := (muzzle - eye).normalized()
+	return hit.position - toward_muzzle * 0.05
 
 func cast_selected_spell_immediate(target: Vector3) -> bool:
 	aim_point = target
@@ -1186,6 +1230,9 @@ func apply_exhaustion(duration: float = 3.0) -> void:
 	_show_message("탈진 — 3초 동안 이동할 수 없습니다.")
 
 func _limited_aim_target(max_range: float) -> Vector3:
+	if network_enabled:
+		var from_muzzle := aim_point - cast_origin.global_position
+		return cast_origin.global_position + from_muzzle.limit_length(max_range)
 	var flat: Vector3 = aim_point - global_position
 	flat.y = 0.0
 	return global_position + flat.limit_length(max_range)

@@ -11,7 +11,25 @@ var user_id: String = ""
 func _ready() -> void:
 	if _is_dedicated_server_launch():
 		return
-	user_id = load_or_create_identity()
+	user_id = _debug_player_id()
+	if user_id.is_empty():
+		user_id = load_or_create_identity()
+	print("[IDENTITY] local user_id=%s" % user_id)
+
+
+func _debug_player_id() -> String:
+	if not OS.is_debug_build():
+		return ""
+	for argument: String in OS.get_cmdline_user_args():
+		if argument.begins_with("--player-id="):
+			var alias := argument.trim_prefix("--player-id=")
+			match alias:
+				"test_player_01":
+					return "00000000-0000-4000-8000-000000000001"
+				"test_player_02":
+					return "00000000-0000-4000-8000-000000000002"
+			push_warning("[IDENTITY] unsupported debug player-id: %s" % alias)
+	return ""
 
 
 func load_or_create_identity(path: String = IDENTITY_PATH) -> String:
