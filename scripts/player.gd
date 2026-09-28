@@ -9,6 +9,8 @@ signal active_element_changed(primary_element: String)
 signal injury_changed(body_part: String, severity: float)
 
 @export var in_raid: bool = true
+## The BaseScene lobby is local even while the client is connected to a server.
+var first_person_local := false
 
 ## Set by the authoritative world before the node enters the scene tree.
 var network_enabled := false
@@ -162,12 +164,17 @@ func _ready() -> void:
 	# Network replicas must never briefly claim the viewport camera while their
 	# local/remote role is being configured. That race left late-joining clients
 	# looking at the fixed spawn camera instead of their own player.
-	camera.current = not network_enabled
+	camera.current = not network_enabled and not first_person_local
 	first_person_camera.current = false
 	if not network_enabled:
-		camera.global_position = global_position + Vector3(0, camera_height, camera_distance)
-		camera.look_at(global_position + Vector3(0, 0.5, 0))
-		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		if first_person_local:
+			_initialize_local_first_person_presentation()
+			first_person_camera.make_current()
+			print("[CAMERA] local lobby camera=%s" % str(first_person_camera.get_path()))
+		else:
+			camera.global_position = global_position + Vector3(0, camera_height, camera_distance)
+			camera.look_at(global_position + Vector3(0, 0.5, 0))
+			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if network_enabled:
 		set_multiplayer_authority(network_peer_id)
 		_configure_network_presentation()
@@ -227,6 +234,10 @@ func is_local_network_player() -> bool:
 	return network_enabled and not multiplayer.is_server() and network_peer_id == multiplayer.get_unique_id()
 
 
+func _uses_first_person() -> bool:
+	return first_person_local or is_local_network_player()
+
+
 func _configure_network_presentation() -> void:
 	var local_peer := multiplayer.get_unique_id()
 	var is_local := is_local_network_player()
@@ -243,6 +254,10 @@ func _initialize_local_network_player() -> void:
 	set_process_unhandled_input(true)
 	_network_aim_yaw = rotation.y
 	_network_aim_initialized = true
+	_initialize_local_first_person_presentation()
+
+
+func _initialize_local_first_person_presentation() -> void:
 	for part_name: String in ["Head", "HatBrim", "CrookedHat"]:
 		var part := visual.get_node_or_null("PlaceholderMageModel/" + part_name) as MeshInstance3D
 		if part != null:
@@ -278,6 +293,9 @@ func _initialize_remote_network_player() -> void:
 func _physics_process(delta: float) -> void:
 	if network_enabled:
 		_network_physics_process(delta)
+		return
+	if first_person_local and _main_menu_open():
+		velocity = Vector3.ZERO
 		return
 	if dead:
 		velocity = velocity.move_toward(Vector3.ZERO, delta * 8.0)
@@ -332,7 +350,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _input(event: InputEvent) -> void:
-	if not is_local_network_player() or dead or _is_free_aim_ui_blocked():
+	if not _uses_first_person() or dead or _is_free_aim_ui_blocked():
 		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotation.y -= event.relative.x * FPS_MOUSE_SENSITIVITY
@@ -740,7 +758,7 @@ func _apply_movement_input(input: Vector2, sprint_pressed: bool, crouch_pressed:
 func _update_aim() -> void:
 	if camera == null:
 		return
-	if network_enabled and is_local_network_player():
+	if _uses_first_person():
 		if not _network_aim_initialized:
 			_network_aim_yaw = rotation.y
 			_network_aim_initialized = true
@@ -759,6 +777,8 @@ func _update_aim() -> void:
 	_update_preview()
 
 func _update_camera(delta: float) -> void:
+	if _uses_first_person():
+		return
 	var look_offset: Vector3 = aim_point - global_position
 	look_offset.y = 0.0
 	look_offset = look_offset.limit_length(3.0) * aim_look_ahead
@@ -808,7 +828,12 @@ func _raycast_aim_target(ray_origin: Vector3, ray_direction: Vector3, max_distan
 
 
 func _is_free_aim_ui_blocked() -> bool:
-	return _main_menu_open() or _raid_aim_ui_open()
+	return _main_menu_open() or _raid_aim_ui_open() or _base_ui_open()
+
+
+func _base_ui_open() -> bool:
+	var area := _gameplay_area()
+	return area is BaseScene and (area as BaseScene).base_ui.visible
 
 
 func _main_menu_open() -> bool:
@@ -951,7 +976,7 @@ func complete_cast() -> bool:
 			active_healing_circle = raid.spawn_healing_circle(self, config, cast_target)
 	elif config.behavior_type == "projectile":
 		var base_direction: Vector3 = cast_target - cast_start
-		if not network_enabled:
+		if not (network_enabled or first_person_local):
 			base_direction.y = 0.0
 		base_direction = base_direction.normalized()
 		if "beam" in config.behavior_tags and raid.has_method("cast_special_spell"):
@@ -964,7 +989,7 @@ func complete_cast() -> bool:
 					raid.spawn_player_spell(self, config, cast_start, direction, cast_target)
 	elif raid.has_method("cast_special_spell"):
 		var base_direction: Vector3 = cast_target - cast_start
-		if not network_enabled:
+		if not (network_enabled or first_person_local):
 			base_direction.y = 0.0
 		base_direction = base_direction.normalized()
 		raid.cast_special_spell(self, config, cast_start, cast_target, base_direction)
@@ -977,7 +1002,7 @@ func complete_cast() -> bool:
 
 func _safe_cast_start() -> Vector3:
 	var muzzle := cast_origin.global_position
-	if not network_enabled:
+	if not (network_enabled or first_person_local):
 		return muzzle
 	var eye := global_position + Vector3(0, 1.55, 0)
 	var query := PhysicsRayQueryParameters3D.create(eye, muzzle)
@@ -1230,7 +1255,7 @@ func apply_exhaustion(duration: float = 3.0) -> void:
 	_show_message("탈진 — 3초 동안 이동할 수 없습니다.")
 
 func _limited_aim_target(max_range: float) -> Vector3:
-	if network_enabled:
+	if _uses_first_person() or network_enabled:
 		var from_muzzle := aim_point - cast_origin.global_position
 		return cast_origin.global_position + from_muzzle.limit_length(max_range)
 	var flat: Vector3 = aim_point - global_position

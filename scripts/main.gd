@@ -26,6 +26,7 @@ enum SessionPhase { MAIN_MENU, SOLO_LOBBY, MULTIPLAYER_LOBBY, LOADING_RAID, IN_R
 var active_area: Node
 var start_screen: StartScreen
 var local_menu_open := false
+var lobby_mouse_captured := false
 var session_phase := SessionPhase.MAIN_MENU
 var _pending_network_region_state: Dictionary = {}
 
@@ -81,6 +82,22 @@ func _ready() -> void:
 
 
 func _input(event: InputEvent) -> void:
+	if active_area is BaseScene and session_phase in [SessionPhase.SOLO_LOBBY, SessionPhase.MULTIPLAYER_LOBBY]:
+		if event.is_action_pressed("pause_game"):
+			if lobby_mouse_captured:
+				lobby_mouse_captured = false
+				refresh_local_input_state("lobby_escape")
+			else:
+				toggle_pause("lobby_escape")
+			get_viewport().set_input_as_handled()
+			return
+		if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+			var lobby := active_area as BaseScene
+			if not lobby.base_ui.visible and not pause_menu.visible:
+				lobby_mouse_captured = true
+				refresh_local_input_state("lobby_capture")
+				get_viewport().set_input_as_handled()
+			return
 	# Multiplayer pause/menu input belongs to the persistent client root. Handling
 	# Escape here (before Control nodes and Player._unhandled_input) prevents UI
 	# focus from swallowing the event or leaving menu and gameplay state inverted.
@@ -149,6 +166,7 @@ func start_game() -> void:
 
 func show_base() -> void:
 	session_phase = SessionPhase.MULTIPLAYER_LOBBY if NetworkManager.is_connected_to_server() else SessionPhase.SOLO_LOBBY
+	lobby_mouse_captured = false
 	get_tree().paused = false
 	result_ui.visible = false
 	pause_menu.visible = false
@@ -166,6 +184,7 @@ func show_base() -> void:
 	else:
 		print("[LOBBY] Enter solo lobby")
 	world_container.add_child(active_area)
+	refresh_local_input_state("lobby_start")
 
 func start_raid() -> void:
 	if NetworkManager.is_connected_to_server():
@@ -343,6 +362,7 @@ func toggle_pause(source: String = "toggle_pause") -> void:
 		return
 	get_tree().paused = not get_tree().paused
 	pause_menu.visible = get_tree().paused
+	refresh_local_input_state(source)
 
 
 func _set_network_menu_open(open: bool, source: String) -> void:
@@ -352,6 +372,11 @@ func _set_network_menu_open(open: bool, source: String) -> void:
 
 
 func refresh_local_input_state(source: String = "external") -> void:
+	if active_area is BaseScene:
+		var lobby := active_area as BaseScene
+		var blocked := pause_menu.visible or local_menu_open or lobby.base_ui.visible
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if lobby_mouse_captured and not blocked else Input.MOUSE_MODE_VISIBLE
+		return
 	if not NetworkManager.is_connected_to_server():
 		# Preserve main's visible, absolute mouse aiming in solo play.
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE

@@ -31,3 +31,6 @@ yaw, crosshair versus projectile path, near-wall shots, damage/HP, Escape and
 inventory capture, and a return to lobby followed by re-entry. Headless runs
 can verify connection, session creation, player replication and camera owner
 logs; mouse, visuals and actual hit behavior require visible-client checks.
+
+The local lobby also uses the first-person camera. Right-click to capture the
+mouse for looking around; Escape releases it for station and matchmaking UI.

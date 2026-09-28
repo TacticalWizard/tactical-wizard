@@ -61,6 +61,9 @@ func _process(_delta: float) -> void:
 		base_ui.close_station()
 	else:
 		base_ui.show_station(active_station.station_id, active_station.display_name)
+	var root := get_tree().current_scene
+	if root != null and root.has_method("refresh_local_input_state"):
+		root.refresh_local_input_state("base_station")
 
 func _build_base_spell_hotbar() -> void:
 	for index: int in range(3):
@@ -81,13 +84,14 @@ func _update_base_spell_hotbar() -> void:
 		var button := base_spell_buttons[index]
 		button.icon = UIIconFactory.spell_icon(spell, 96) if spell != null else UIIconFactory.icon("?", "neutral", 96)
 		button.text = str(index + 1)
-		button.tooltip_text = "%s\n마나 %.0f — 지면을 클릭해 시전" % [spell.display_name if spell != null else "비어 있음", config.mana_cost if config != null else 0.0]
+		button.tooltip_text = "%s\n마나 %.0f — 화면 중앙을 향해 좌클릭 시전" % [spell.display_name if spell != null else "비어 있음", config.mana_cost if config != null else 0.0]
 		button.disabled = spell == null
 		button.modulate = Color.WHITE if player.selected_page == index else Color(0.58, 0.58, 0.66, 0.9)
 
 func _spawn_player() -> void:
 	player = player_scene.instantiate() as PlayerController
 	player.in_raid = false
+	player.first_person_local = true
 	player.position = runtime_actors.to_local(player_spawn.global_position)
 	player.rotation_degrees.y = player_spawn.facing_direction_degrees
 	runtime_actors.add_child(player)
@@ -218,7 +222,7 @@ func spawn_player_spell(caster: PlayerController, config: RuntimeSpellConfig, st
 	var projectile := config.base_spell.projectile_scene.instantiate() as SpellProjectile
 	temporary_effects.add_child(projectile)
 	projectile.global_position = start
-	projectile.configure(caster, config, direction, "player", target)
+	projectile.configure(caster, config, direction, "player", target, not caster.first_person_local)
 	return projectile
 
 func spawn_healing_circle(caster: PlayerController, config: RuntimeSpellConfig, at: Vector3) -> HealingCircle:
